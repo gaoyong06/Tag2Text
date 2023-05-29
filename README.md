@@ -104,6 +104,13 @@ This work is done with the help of the amazing code base of [BLIP](https://githu
 We also want to thank @Cheng Rui @Shilong Liu @Ren Tianhe for their help in [marrying Tag2Text with Grounded-SAM](https://github.com/IDEA-Research/Grounded-Segment-Anything).
 
 
+## 修改
+1. inference.py 增加：加载模型权重时会进行权重缓存，以后再次调用程序时，会直接从缓存中读取模型参数提高程序执行效率
+2. models/utils.py bert-base-uncased网络下载慢,修改bert-base-uncased模型加载方式为本地加载, 注释掉打印信息
+3. models/tag2text.py 注释掉打印信息
+4. 增加：.gitignore文件
+5. 增加：image_tagging.py 程序逻辑本身和inference.py是相同的,只是做了一些封装和输出格式的调整
+
 
 
 

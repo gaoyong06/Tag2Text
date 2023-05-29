@@ -261,6 +261,6 @@ def tag2text_caption(pretrained='', **kwargs):
             model, msg = load_checkpoint_swinbase(model, pretrained, kwargs)
         else:
             model, msg = load_checkpoint(model, pretrained)
-        print('vit:', kwargs['vit'])
-        print('msg', msg)
+        # print('vit:', kwargs['vit'])
+        # print('msg', msg)
     return model
