@@ -110,9 +110,3 @@ We also want to thank @Cheng Rui @Shilong Liu @Ren Tianhe for their help in [mar
 3. models/tag2text.py 注释掉打印信息
 4. 增加：.gitignore文件
 5. 增加：image_tagging.py 程序逻辑本身和inference.py是相同的,只是做了一些封装和输出格式的调整
-
-
-
-
-
-
