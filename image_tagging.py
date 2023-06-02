@@ -2,7 +2,7 @@
 Author: gaoyong gaoyong06@qq.com
 Date: 2023-05-25 08:51:43
 LastEditors: gaoyong gaoyong06@qq.com
-LastEditTime: 2023-05-29 20:37:17
+LastEditTime: 2023-06-02 14:58:51
 FilePath: \Tag2Text\image_tagging.py
 Description: 自动生成图片标签和内容描述 (程序逻辑本身和inference.py是相同的,只是做了一些封装和输出格式的调整)
 '''
@@ -15,6 +15,7 @@ import torchvision.transforms as transforms
 
 from PIL import Image
 from models.tag2text import tag2text_caption
+import translators as ts
 
 def parse_args():
     """
@@ -87,8 +88,20 @@ def inference(image, model, input_tag="None"):
 
     return tag_predict[0], input_tag[0], caption[0]
 
-# 使用示例: python image_tagging.py --cache-path C:/Users/gaoyo/.cache/Tag2Text --image D:/work/images/detect_gender/24.jpeg
-# 返回值:
+# 使用示例：
+# python image_tagging.py --cache-path C:/Users/gaoyo/.cache/Tag2Text --image D:/work/images/detect_gender/24.jpeg
+# 返回值：
+# {
+#     "status": 0,
+#     "message": "ok",
+#     "data": {
+#         "model_identified_tags": "woman | bed | girl | people | person | man | couple | head | lay | lie | young",
+#         "model_identified_tags_zh": "女人 |床 |女孩 |人物 |人 |男人 |情侣 |头 |莱 |谎言 |年轻",
+#         "user_specified_tags": null,
+#         "image_caption": "a young man and woman laying in bed with their heads together",
+#         "image_caption_zh": "一对年轻男女躺在床上，头并拢"
+#     }
+# }
 
 def main():
     """
@@ -131,15 +144,18 @@ def main():
         (args.image_size, args.image_size)
     )
     image = transform(raw_image).unsqueeze(0).to(device)
-
     res = inference(image, model, args.specified_tags)
+    tags_zh = ts.translate_text(res[0], to_language="zh")
+    caption_zh = ts.translate_text(res[2], to_language="zh")
 
     status = 0
     message = 'ok'
     data = {
         "model_identified_tags":  res[0],
+        "model_identified_tags_zh": tags_zh,
         "user_specified_tags": res[1],
-        "image_caption": res[2]
+        "image_caption": res[2],
+        "image_caption_zh": caption_zh
     }
     results = {
         "status": status,
@@ -147,7 +163,7 @@ def main():
         "data": data
     }
 
-    print(json.dumps(results, indent=4))
+    print(json.dumps(results, ensure_ascii=False, indent=4))
 
 
 if __name__ == '__main__':
