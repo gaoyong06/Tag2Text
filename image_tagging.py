@@ -1,8 +1,9 @@
+# -*- coding: utf-8 -*-
 '''
 Author: gaoyong gaoyong06@qq.com
 Date: 2023-05-25 08:51:43
 LastEditors: gaoyong gaoyong06@qq.com
-LastEditTime: 2023-06-06 11:14:48
+LastEditTime: 2023-06-06 15:18:23
 FilePath: \Tag2Text\image_tagging.py
 Description: 自动生成图片标签和内容描述 (程序逻辑本身和inference.py是相同的,只是做了一些封装和输出格式的调整)
 '''
@@ -33,7 +34,7 @@ def parse_args():
     parser.add_argument('--pretrained',
                         metavar='DIR',
                         help='path to pretrained model',
-                        default='pretrained/tag2text_swin_14m.pth')
+                        default='D:/work/Tag2Text/pretrained/tag2text_swin_14m.pth')
     parser.add_argument('--image-size',
                         default=384,
                         type=int,
@@ -110,65 +111,55 @@ def main():
     caption for the image based on specified and identified tags.
     """
     args = parse_args()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                    std=[0.229, 0.224, 0.225])
+    transform = transforms.Compose([
+        transforms.Resize((args.image_size, args.image_size)),
+        transforms.ToTensor(), normalize
+    ])
     
-    # 检查输入文件是否为 GIF 格式
-    if imghdr.what(args.image) == 'gif':
-        results = {
-            "status": 1,
-            "message": "Unsupported image format. Please provide a single-frame image.",
-            "data": None
-        }
+    # delete some tags that may disturb captioning
+    # 127: "quarter"; 2961: "back", 3351: "two"; 3265: "three"; 3338: "four"; 3355: "five"; 3359: "one"
+    delete_tag_index = [127,2961, 3351, 3265, 3338, 3355, 3359]
+
+    #######load model
+    if os.path.exists(args.cache_path):
+        model = torch.load(args.cache_path)
     else:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                        std=[0.229, 0.224, 0.225])
-        transform = transforms.Compose([
-            transforms.Resize((args.image_size, args.image_size)),
-            transforms.ToTensor(), normalize
-        ])
-        
-        # delete some tags that may disturb captioning
-        # 127: "quarter"; 2961: "back", 3351: "two"; 3265: "three"; 3338: "four"; 3355: "five"; 3359: "one"
-        delete_tag_index = [127,2961, 3351, 3265, 3338, 3355, 3359]
-
-        #######load model
-        if os.path.exists(args.cache_path):
-            model = torch.load(args.cache_path)
-        else:
-            model = tag2text_caption(
-                pretrained=args.pretrained,
-                image_size=args.image_size,
-                vit='swin_b',
-                delete_tag_index=delete_tag_index
-            )
-            model.threshold = args.thre  # threshold for tagging
-            model.eval()
-            torch.save(model, args.cache_path)
-
-        # 移动模型到设备上
-        model = model.to(device)
-
-        # 加载图片并进行数据预处理
-        raw_image = Image.open(args.image).resize(
-            (args.image_size, args.image_size)
+        model = tag2text_caption(
+            pretrained=args.pretrained,
+            image_size=args.image_size,
+            vit='swin_b',
+            delete_tag_index=delete_tag_index
         )
-        image = transform(raw_image).unsqueeze(0).to(device)
-        res = inference(image, model, args.specified_tags)
-        tags_zh = ts.translate_text(res[0], to_language="zh")
-        caption_zh = ts.translate_text(res[2], to_language="zh")
+        model.threshold = args.thre  # threshold for tagging
+        model.eval()
+        torch.save(model, args.cache_path)
 
-        data = {
-            "model_identified_tags":  res[0],
-            "model_identified_tags_zh": tags_zh,
-            "user_specified_tags": res[1],
-            "image_caption": res[2],
-            "image_caption_zh": caption_zh
-        }
-        results = {
-            "status": 0,
-            "message": 'ok',
-            "data": data
-        }
+    # 移动模型到设备上
+    model = model.to(device)
+
+    # 加载图片并进行数据预处理
+    raw_image = Image.open(args.image).convert("RGB").resize(
+        (args.image_size, args.image_size))
+    image = transform(raw_image).unsqueeze(0).to(device)
+    res = inference(image, model, args.specified_tags)
+    tags_zh = ts.translate_text(res[0], to_language="zh")
+    caption_zh = ts.translate_text(res[2], to_language="zh")
+
+    data = {
+        "model_identified_tags":  res[0],
+        "model_identified_tags_zh": tags_zh,
+        "user_specified_tags": res[1],
+        "image_caption": res[2],
+        "image_caption_zh": caption_zh
+    }
+    results = {
+        "status": 0,
+        "message": 'ok',
+        "data": data
+    }
 
     print(json.dumps(results, ensure_ascii=False, indent=4))
 
