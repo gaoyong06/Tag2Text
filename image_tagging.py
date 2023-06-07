@@ -145,8 +145,12 @@ def main():
         (args.image_size, args.image_size))
     image = transform(raw_image).unsqueeze(0).to(device)
     res = inference(image, model, args.specified_tags)
-    tags_zh = ts.translate_text(res[0], to_language="zh")
-    caption_zh = ts.translate_text(res[2], to_language="zh")
+    
+    # 打开翻译程序执行效率太低，暂时关闭
+    # tags_zh = ts.translate_text(res[0], to_language="zh")
+    # caption_zh = ts.translate_text(res[2], to_language="zh")
+    tags_zh = ""
+    caption_zh = ""
 
     data = {
         "model_identified_tags":  res[0],
