@@ -16,7 +16,7 @@ import torchvision.transforms as transforms
 
 from PIL import Image
 from models.tag2text import tag2text_caption
-import translators as ts
+# import translators as ts
 import imghdr
 
 def parse_args():
