@@ -1,14 +1,23 @@
+# -*- coding: utf-8 -*-
+'''
+Author: gaoyong gaoyong06@qq.com
+Date: 2023-06-08 10:51:43
+LastEditors: gaoyong gaoyong06@qq.com
+LastEditTime: 2023-06-08 11:07:57
+FilePath: \Tag2Text\test.py
+Description: 自动生成图片标签和内容描述
+'''
 import argparse
 import json
 import os
+import time
 
+import imghdr
 import torch
 import torchvision.transforms as transforms
-
 from PIL import Image
+
 from models.tag2text import tag2text_caption
-import imghdr
-import time
 
 
 def parse_args():
@@ -21,8 +30,13 @@ def parse_args():
         description='Tag2Text inference for tagging and captioning')
     parser.add_argument('--image-dir',
                         metavar='DIR',
-                        help='path to dataset directory',
-                        default='images/')
+                        help='path to directory containing input images',
+                        default='')
+    parser.add_argument('--images',
+                        metavar='IMAGE-LIST',
+                        nargs='+',
+                        help='list of space-separated image filenames',
+                        default=[])
     parser.add_argument('--pretrained',
                         metavar='DIR',
                         help='path to pretrained model',
@@ -48,6 +62,14 @@ def parse_args():
 
 
 def initialize_model(cache_path, pretrained, image_size, thre):
+    """
+    This function initializes a Tag2Text model based on specified and identified tags.
+    :param cache_path: Cache model file path.
+    :param pretrained: Path to the pre-trained model.
+    :param image_size: Input image size.
+    :param thre: Threshold value for tagging.
+    :return: A pre-trained Tag2Text model.
+    """
 
     # delete some tags that may disturb captioning
     # 127: "quarter"; 2961: "back", 3351: "two"; 3265: "three"; 3338: "four"; 3355: "five"; 3359: "one"
@@ -65,11 +87,22 @@ def initialize_model(cache_path, pretrained, image_size, thre):
         model.threshold = thre  # threshold for tagging
         model.eval()
         torch.save(model, cache_path)
+
     return model
 
 
 def generate(model, image, input_tags=None):
-    if input_tags in ['', 'none', 'None']:
+    """
+    This function generates tags and captions for an input image.
+    :param model: The neural network model used for generating captions and predicting tags for an input
+    image.
+    :param image: The input image to generate tags and captions for.
+    :param input_tags: The input tags used as hints for the model to generate captions for the input image.
+    It is an optional parameter and can be set to None or left empty if no tag hint is required.
+    :return: A tuple of predicted tags, input tags, and generated captions.
+    """
+
+    if input_tags in ('', 'none', 'None'):
         input_tags = None
 
     with torch.no_grad():
@@ -87,53 +120,67 @@ def generate(model, image, input_tags=None):
                                              tag_input=input_tag_list,
                                              max_length=50,
                                              return_tag_predict=True)
-
     return tag_predict[0], input_tags[0], caption[0]
 
 
-def inference(images_dir, model, image_size, input_tags=None):
+def inference(images_dir, image_list, model, image_size, input_tags=None):
     """
-    This function takes a list of images and a model, generates captions for the images, and optionally
-    takes a list of input tags to generate captions with those tags.
-
-    :param images_dir: a directory containing input images that the model will use to generate captions and
-    potentially predict tags for
+    This function takes a list of images or a directory containing images, a model, generates captions
+    for the images, and optionally takes a list of input tags to generate captions with those tags.
+    :param images_dir: A directory containing input images that the model will use to generate captions and
+    potentially predict tags for.
+    :param image_list: A list of input images the model will use to generate captions and potentially
+    predict tags for.
     :param model: The neural network model used for generating captions and predicting tags for an input
-    image
+    image.
     :param input_tags: The input tags are lists of strings that represent tags or sets of tags that are
     used as hints for the model to generate captions for the given images. It is an optional parameter and
-    can be set to None or left empty if no tag hint is required, defaults to None (optional)
-    :return: a list of dictionaries, each containing predicted tags, input tags (if provided), and
+    can be set to None or left empty if no tag hint is required, defaults to None.
+    :return: A list of dictionaries, each containing predicted tags, input tags (if provided), and
     generated captions for a given input image.
     """
-
+    
     results = []
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+                                    std=[0.229, 0.224, 0.225])
     transform = transforms.Compose([
         transforms.Resize((image_size, image_size)),
         transforms.ToTensor(), normalize
     ])
 
-    for filename in os.listdir(images_dir):
-        filepath = os.path.join(images_dir, filename)
-        if not imghdr.what(filepath):
-            continue
-        img = Image.open(filepath).convert("RGB")
-        img_tensor = transform(img).unsqueeze(0).to(device)
-        res = generate(model, img_tensor, input_tags)
-        results.append({
-            "filepath": filepath,
-            "model_identified_tags": res[0],
-            "user_specified_tags": res[1],
-            "image_caption": res[2]
-        })
+    if images_dir and os.path.isdir(images_dir):
+        for filename in os.listdir(images_dir):
+            filepath = os.path.join(images_dir, filename)
+            if not imghdr.what(filepath):
+                continue
+            img = Image.open(filepath).convert("RGB")
+            img_tensor = transform(img).unsqueeze(0).to(device)
+            res = generate(model, img_tensor, input_tags)
+            results.append({
+                "filepath": filepath,
+                "model_identified_tags": res[0],
+                "user_specified_tags": res[1],
+                "image_caption": res[2]
+            })
+    elif image_list and isinstance(image_list, list):
+        for img_path in image_list:
+            filepath = os.path.abspath(img_path)
+            if not os.path.isfile(filepath) or not imghdr.what(filepath):
+                continue
+            img = Image.open(filepath).convert("RGB")
+            img_tensor = transform(img).unsqueeze(0).to(device)
+            res = generate(model, img_tensor, input_tags)
+            results.append({
+                "filepath": img_path,
+                "model_identified_tags": res[0],
+                "user_specified_tags": res[1],
+                "image_caption": res[2]
+            })
 
     return results
-
 
 def main():
     """
@@ -143,12 +190,15 @@ def main():
     start_time = time.time()
     args = parse_args()
 
+    # check if a list of images is provided
+    images = args.images if args.images else None
     # initialize the model
     model = initialize_model(
         args.cache_path, args.pretrained, args.image_size, args.thre)
 
-    # perform inference on images in the input directory
-    data = inference(args.image_dir, model, args.image_size, input_tags=None)
+    # perform inference on images
+    data = inference(args.image_dir, images, model,
+                    args.image_size, input_tags=None)
 
     # output the results
     results = {
@@ -163,7 +213,11 @@ def main():
     print(
         f"Processed {len(results['data'])} images in {elapsed_time:.2f} seconds.")
 
-    print(json.dumps(results, ensure_ascii=False, indent=4))
+    print(json.dumps(results, ensure_ascii=False, indent=2))
+
+# 使用示例：
+# 1. python test.py --cache-path C:/Users/gaoyo/.cache/Tag2Text --image-dir C:/Users/gaoyo/Desktop/test1/
+# 2. python test.py --cache-path C:/Users/gaoyo/.cache/Tag2Text --images C:/Users/gaoyo/Desktop/test1/20170912_234158_1_14_70wf.jpeg C:/Users/gaoyo/Desktop/test1/20170918_192435_1_57_9yto.jpeg
 
 
 if __name__ == '__main__':
