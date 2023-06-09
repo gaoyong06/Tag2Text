@@ -2,22 +2,41 @@
 Author: gaoyong gaoyong06@qq.com
 Date: 2023-06-08 11:44:38
 LastEditors: gaoyong gaoyong06@qq.com
-LastEditTime: 2023-06-08 16:59:32
+LastEditTime: 2023-06-09 17:10:04
 FilePath: \Tag2Text\test.py
 Description: 自动生成图片目录下的图片标签和内容描述
 '''
 import argparse
 import imghdr
-import json
+import logging
 import os
-import time
-
-import pymysql.cursors
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
-from image_caption import initialize_model, generate, inference
+from image_caption import initialize_model, generate
 import datetime
+from threading import Lock
+from loguru import logger
+import os
+import csv
+from datetime import datetime
+from typing import List
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import List
+
+import torch
+from PIL import Image
+from torchvision import transforms
+import pymysql.cursors
+
+
+lock = Lock()
+
+FILE_LIST_CSV = 'file_list.csv'
+EXPIRATION_DAYS = 1
+FILE_LIST_SUFFIX = '_file_list.csv'
 
 def parse_args():
     """
@@ -70,6 +89,66 @@ def parse_args():
 
     return parser.parse_args()
 
+
+def get_file_list_csv(image_dir):
+    """
+    Get the file list CSV filename associated with the specified image directory.
+    """
+    logger.info("start")
+    dir_name = os.path.basename(os.path.normpath(image_dir))
+    csv_file = os.path.join(image_dir, dir_name + FILE_LIST_SUFFIX)
+    return csv_file
+
+def create_file_list(image_dir):
+    """
+    Create a list of image file paths in the specified directory and its subdirectories.
+    """
+    logger.info("start")
+    # 用于存放图像文件的路径
+    file_list = []
+
+    # 递归遍历指定目录及其子目录，并将每个图像文件的路径添加到 file_list 列表中
+    for root, dirs, files in os.walk(image_dir):
+        for filename in files:
+            if filename.endswith('.jpg') or filename.endswith('.jpeg') or filename.endswith('.png') or filename.endswith('.webp'):
+                filepath = os.path.join(root, filename)
+                file_list.append(filepath)
+
+    return file_list
+
+def save_file_list(file_list, csv_file):
+    """
+    Save the list of file paths to a CSV file.
+    """
+    logger.info(f"start. {csv_file}")
+    with open(csv_file, 'w', newline='') as csvfile:
+        csvwriter = csv.writer(csvfile, delimiter=',')
+        csvwriter.writerow(['filepath'])
+        for filepath in file_list:
+            csvwriter.writerow([filepath])
+
+def load_file_list_csv(image_dir):
+    """
+    Load the list of file paths from a CSV file if it is not expired.
+    """
+    logger.info("start")
+    csv_file = get_file_list_csv(image_dir)
+    
+    if os.path.isfile(csv_file):
+        mod_time = os.path.getmtime(csv_file)
+        exp_time = datetime.fromtimestamp(mod_time + EXPIRATION_DAYS*24*60*60)
+        if exp_time >= datetime.now():
+            with open(csv_file, 'r') as f:
+                reader = csv.reader(f)
+                next(reader) # skip header
+                file_list = [row[0] for row in reader]
+            return file_list
+    
+    # 如果 CSV 文件不存在或已过期，则重新生成新的文件列表
+    file_list = create_file_list(image_dir)
+    save_file_list(file_list, csv_file)
+    return file_list
+
 def insert_image(db_conn, image_path, tags, caption):
     """
     This function inserts an image’s information into the database.
@@ -84,38 +163,42 @@ def insert_image(db_conn, image_path, tags, caption):
             sql = "SELECT image_id FROM tbl_image_caption WHERE local_path=%s AND tags<>'' AND caption<>''"
             cursor.execute(sql, (image_path,))
             if cursor.rowcount > 0:
-                print(f"{image_path} already processed. Skipping.")
+                logger.info(f"{image_path} already processed. Skipping.")
                 return False
             
             sql = "INSERT INTO tbl_image_caption (local_path, tags, caption) VALUES (%s, %s, %s)"
             cursor.execute(sql, (image_path, tags, caption))
-            print(f"{cursor.rowcount} rows inserted.")
+            logger.info(f"{cursor.rowcount} rows inserted.")
             
         db_conn.commit()  # commit changes to the database
         return True
 
     except Exception as ex:
         db_conn.rollback()  # undo changes on error
-        print(f"Failed to insert {image_path} into database: {ex}")
+        logger.info(f"Failed to insert {image_path} into database: {ex}")
         return False
 
-def process_directory(db_conn, image_dir, model, image_size, input_tags=None):
-    """
-    This function processes a directory or list of images, generates captions and tags, and writes the
-    results to the database.
-    :param db_conn: A database connection object.
-    :param image_dir: A directory path containing a set of images to process. All images in the directory and its subdirectories will be processed.
-    :param model: The trained Tag2Text image captioning model.
-    :param image_size: The desired input image size for the model.
-    :param input_tags: Optional user-specified tags to use for caption generation.
-    """
-    print(f"Processing directory: {image_dir}")
-    if input_tags is not None:
-        print(f"Using input tags: {input_tags}")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+def connect_to_database(db_host, db_port, db_user, db_pass, db_name):
+    return pymysql.connect(
+        host=db_host,
+        port=db_port,
+        user=db_user,
+        password=db_pass,
+        db=db_name,
+        charset='utf8mb4',
+        cursorclass=pymysql.cursors.DictCursor
+    )
 
+
+def worker_thread(batch_files: List[str], device, model, image_size, input_tags, db_config):
+    """
+    Process a batch of image files, generate their tags and captions, and insert them into the database.
+    """
+    # 初始化已处理文件路径列表
+    processed_files = []
+
+    # 定义标准化及变换过程
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                     std=[0.229, 0.224, 0.225])
     transform = transforms.Compose([
@@ -123,82 +206,126 @@ def process_directory(db_conn, image_dir, model, image_size, input_tags=None):
         transforms.ToTensor(), normalize
     ])
 
-    total_processed = 0
-    skipped_files = 0
-    total_files = sum([len(files) for r, d, files in os.walk(image_dir)])
+    try:
+        # 获取数据库连接对象并使用
+        db_conn = connect_to_database(db_config["db_host"], db_config["db_port"], db_config["db_user"], db_config["db_pass"], db_config["db_name"])
+        logger.info("Successfully connected to database.")
 
-    for root, dirs, files in os.walk(image_dir):
-        for filename in files:
-            filepath = os.path.abspath(os.path.join(root, filename))
-            if not imghdr.what(filepath):
-                continue
-
-            # check if the image has been processed before
-            filepath = filepath.replace("\\", "/")
-            with db_conn.cursor() as cursor:
-                sql = "SELECT `tags`, `caption` FROM `tbl_image_caption` WHERE `local_path`=%s"
+        with db_conn.cursor() as cursor:
+            sql = "SELECT `tags`, `caption` FROM `tbl_image_caption` WHERE `local_path`=%s"
+            for filepath in batch_files:
+                logger.info(f"Processing file: {filepath}")
+                # 检查该图像是否已被处理。
+                filepath = filepath.replace("\\", "/")
                 cursor.execute(sql, (filepath,))
                 result = cursor.fetchone()
-            if result is not None and result["tags"] and result["caption"]:
-                print(f"{filepath} already processed. Skipping.")
-                skipped_files += 1
-                continue
+                if result is not None and result["tags"] and result["caption"]:
+                    logger.info(f"{filepath} has been processed. Skipping.")
+                    continue
 
-            # process the image and insert the result into the database
-            print(f"Processing file: {filepath}")
-            start_time = datetime.datetime.now()
+                # 检查该文件是否为图像文件。
+                if imghdr.what(filepath) is None:
+                    logger.warning(f"{filepath} is not an image file. Skipping.")
+                    continue
 
-            img = Image.open(filepath).convert("RGB")
-            img_tensor = transform(img).unsqueeze(0).to(device)
-            res = generate(model, img_tensor, input_tags)
-            tags, input_tags, caption = res
-            insert_image(db_conn, filepath, tags, caption)
+                # 处理图像。
+                try:
+                    with open(filepath, 'rb') as f:
+                        img = Image.open(f).convert("RGB")
+                        img_tensor = transform(img).unsqueeze(0).to(device)
+                        res = generate(model, img_tensor, input_tags)  # 生成标签和说明
+                    tags, input_tags, caption = res
+                    insert_image(db_conn, filepath, tags, caption)  # 写入数据库
 
-            end_time = datetime.datetime.now()
-            process_time = end_time - start_time
-            print(f"Processed in {process_time.total_seconds()} seconds.")
+                    logger.info(f"{filepath} processed successfully. ")
+                    logger.debug(f"Tags: {tags}. Caption: {caption}")
 
-            total_processed += 1
-            progress = (total_processed + skipped_files) / total_files * 100
-            print(f"Progress: {progress:.2f}% ({total_processed + skipped_files}/{total_files})")
+                    # 如果执行到这里，则表示该文件已处理
+                    processed_files.append(filepath)
 
-    print(f"Total processed: {total_processed}, skipped files: {skipped_files}")
+                except Exception as e:
+                    logger.error(f"Failed to process {filepath}. Error message: {str(e)}")
+                    continue
+
+        logger.info(f"Batch of {len(batch_files)} images processed.")
+    except Exception as e:
+        logger.error(f"Error processing batch: {str(e)}")
+    finally:
+        # 释放数据库连接
+        db_conn.close()
+        logger.info("Successfully disconnected from database.")
+
+    return processed_files
+
+def process_directory_mp(db_config, image_dir, model, image_size, input_tags=None, batch_size=24, max_workers=6):
+    """
+    Iterate over all image files in the specified directory and generate tags and caption for each image using the specified model.
+    multiprocessing is used in parallel.
+    """
+    logger.info(f"Processing directory (parallel, batching {batch_size}): {image_dir}")
+    file_list = load_file_list_csv(image_dir)
+    total_files = len(file_list)
+    total_batches = (total_files + batch_size - 1) // batch_size
+    logger.info(f"Total number of files: {total_files}")
+    logger.info(f"Total number of batches: {total_batches}")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for i in range(total_batches):
+            start_idx = i * batch_size
+            end_idx = min(start_idx + batch_size, total_files)
+            batch_files = file_list[start_idx:end_idx]
+            future = executor.submit(worker_thread, batch_files, device, model, image_size, input_tags, db_config)
+            futures.append(future)
+            logger.info(f"Batch {i+1}/{total_batches} of {len(batch_files)} images submitted.")
+
+        processed_files = []
+        for future in as_completed(futures):
+            try:
+                res = future.result()
+                if res is not None:
+                    processed_files.extend(res)
+                    logger.info(f"Batch processed. {len(res)} images processed.")
+            except Exception as exc:
+                logger.error(f"Exception occurred: {exc}")
+            else:
+                logger.info("Batch successfully completed.")
+
+    logger.info("Workers finished.")
+    return processed_files
 
 
 def main():
     """
-    This is the main function that loads the model, sets up the database connection, and processes the
-    specified image directory or list of images.
+    This is the main function that loads the model, sets up the database connection,
+    and processes the specified image directory or list of images using multiprocessing.
     """
+    logger.info("main start")
     # parse command line arguments
     args = parse_args()
+    logger.info("Command line arguments parsed.")
 
-    # set up the database connection
-    db_conn = pymysql.connect(
-        host=args.db_host,
-        port=args.db_port,
-        user=args.db_user,
-        password=args.db_pass,
-        db=args.db_name,
-        charset='utf8mb4',
-        cursorclass=pymysql.cursors.DictCursor
-    )
-
-     # initialize the model
-    model = initialize_model(
-        args.cache_path, args.pretrained, args.image_size, args.thre)
+    # set up the database connection pool
+    db_config = {
+        'db_host': args.db_host,
+        'db_port': args.db_port,
+        'db_user': args.db_user,
+        'db_pass': args.db_pass,
+        'db_name': args.db_name
+    }
+    # initialize the model
+    logger.info("Preparing to initialize the model...")
+    model = initialize_model(args.cache_path, args.pretrained, args.image_size, args.thre)
+    logger.info("Model initialization completed.")
 
     # process the input images
-    process_directory(db_conn, args.image_dir, model,
-                    args.image_size, args.specified_tags)
+    logger.info(f"Processing images in directory: {args.image_dir}")
+    processed_files = process_directory_mp(db_config, args.image_dir, model, args.image_size, args.specified_tags)
+    logger.info(f"{len(processed_files)} images processed.")
+    logger.info("Main function completed.")
 
-    # close the database connection
-    db_conn.close()
 
-    print("Done.")
-
-# >python image_caption_dir.py --cache-path C:/Users/gaoyo/.cache/Tag2Text --image-dir C:/Users/gaoyo/Desktop/test1 --db-host 127.0.0.1 --db-port 3306 --db-user root --db-pass root --db-name content_ner
-# python image_caption_dir.py --cache-path C:/Users/gaoyo/.cache/Tag2Text --image-dir D:/work/wechat_download_data/images/ --db-host 127.0.0.1 --db-port 3306 --db-user root --db-pass root --db-name content_ner
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
 
