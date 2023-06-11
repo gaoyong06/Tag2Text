@@ -2,20 +2,18 @@
 Author: gaoyong gaoyong06@qq.com
 Date: 2023-06-08 11:44:38
 LastEditors: gaoyong gaoyong06@qq.com
-LastEditTime: 2023-06-09 17:10:04
+LastEditTime: 2023-06-10 12:08:23
 FilePath: \Tag2Text\test.py
 Description: 自动生成图片目录下的图片标签和内容描述
 '''
 import argparse
 import imghdr
-import logging
 import os
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
 from image_caption import initialize_model, generate
 import datetime
-from threading import Lock
 from loguru import logger
 import os
 import csv
@@ -32,10 +30,7 @@ from torchvision import transforms
 import pymysql.cursors
 
 
-lock = Lock()
-
-FILE_LIST_CSV = 'file_list.csv'
-EXPIRATION_DAYS = 1
+EXPIRATION_DAYS = 14
 FILE_LIST_SUFFIX = '_file_list.csv'
 
 def parse_args():
@@ -192,72 +187,76 @@ def connect_to_database(db_host, db_port, db_user, db_pass, db_name):
 
 
 def worker_thread(batch_files: List[str], device, model, image_size, input_tags, db_config):
-    """
-    Process a batch of image files, generate their tags and captions, and insert them into the database.
-    """
-    # 初始化已处理文件路径列表
+    """ Process a batch of image files, generate their tags and captions, and insert them into the database. """
+    # 初始化已处理文件路径列表和待插入数据库的图像列表
     processed_files = []
-
+    insert_image_list = []
     # 定义标准化及变换过程
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                    std=[0.229, 0.224, 0.225])
+    normalize = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     transform = transforms.Compose([
         transforms.Resize((image_size, image_size)),
-        transforms.ToTensor(), normalize
+        transforms.ToTensor(),
+        normalize
     ])
-
     try:
         # 获取数据库连接对象并使用
-        db_conn = connect_to_database(db_config["db_host"], db_config["db_port"], db_config["db_user"], db_config["db_pass"], db_config["db_name"])
-        logger.info("Successfully connected to database.")
-
-        with db_conn.cursor() as cursor:
-            sql = "SELECT `tags`, `caption` FROM `tbl_image_caption` WHERE `local_path`=%s"
-            for filepath in batch_files:
-                logger.info(f"Processing file: {filepath}")
-                # 检查该图像是否已被处理。
-                filepath = filepath.replace("\\", "/")
-                cursor.execute(sql, (filepath,))
-                result = cursor.fetchone()
-                if result is not None and result["tags"] and result["caption"]:
-                    logger.info(f"{filepath} has been processed. Skipping.")
-                    continue
-
-                # 检查该文件是否为图像文件。
-                if imghdr.what(filepath) is None:
-                    logger.warning(f"{filepath} is not an image file. Skipping.")
-                    continue
-
-                # 处理图像。
-                try:
-                    with open(filepath, 'rb') as f:
-                        img = Image.open(f).convert("RGB")
-                        img_tensor = transform(img).unsqueeze(0).to(device)
-                        res = generate(model, img_tensor, input_tags)  # 生成标签和说明
-                    tags, input_tags, caption = res
-                    insert_image(db_conn, filepath, tags, caption)  # 写入数据库
-
-                    logger.info(f"{filepath} processed successfully. ")
-                    logger.debug(f"Tags: {tags}. Caption: {caption}")
-
-                    # 如果执行到这里，则表示该文件已处理
-                    processed_files.append(filepath)
-
-                except Exception as e:
-                    logger.error(f"Failed to process {filepath}. Error message: {str(e)}")
-                    continue
-
-        logger.info(f"Batch of {len(batch_files)} images processed.")
+        with connect_to_database(db_config["db_host"], db_config["db_port"], db_config["db_user"], db_config["db_pass"], db_config["db_name"]) as db_conn:
+            logger.info("Successfully connected to database.")
+            with db_conn.cursor() as cursor:
+                sql = "SELECT `tags`, `caption` FROM `tbl_image_caption` WHERE `local_path`=%s"
+                for filepath in batch_files:
+                    logger.info(f"Processing file: {filepath}")
+                    # 检查该图像是否已被处理。
+                    filepath = filepath.replace("\\", "/")
+                    cursor.execute(sql, (filepath,))
+                    result = cursor.fetchone()
+                    if result is not None and result["tags"] and result["caption"]:
+                        logger.info(f"{filepath} has been processed. Skipping.")
+                        continue
+                    # 检查该文件是否为图像文件。
+                    if imghdr.what(filepath) is None:
+                        logger.warning(f"{filepath} is not an image file. Skipping.")
+                        continue
+                    # 处理图像。
+                    try:
+                        with open(filepath, 'rb') as f:
+                            img = Image.open(f).convert("RGB")
+                            img_tensor = transform(img).unsqueeze(0).to(device)
+                            # 生成标签和说明
+                            tags, input_tags, caption = generate(model, img_tensor, input_tags)
+                            # 将需要插入数据库的记录加入列表 insert_image_list
+                            insert_image_list.append((filepath, tags, caption))
+                            # 如果 insert_image_list 中待插入的图片记录数量超过阈值，则进行批量插入操作
+                            if len(insert_image_list) >= 100:
+                                sql = "INSERT INTO `tbl_image_caption` (`local_path`, `tags`, `caption`) VALUES (%s, %s, %s)"
+                                cursor.executemany(sql, insert_image_list)
+                                db_conn.commit()
+                                logger.info(f"Inserted {len(insert_image_list)} records into database.")
+                                insert_image_list.clear()
+                            logger.info(f"{filepath} processed successfully. ")
+                            logger.debug(f"Tags: {tags}. Caption: {caption}")
+                            # 如果执行到这里，则表示该文件已处理
+                            processed_files.append(filepath)
+                    except Exception as e:
+                        logger.error(f"Failed to process {filepath}. Error message: {str(e)}")
+                        continue
+                # 最后将 insert_image_list 中的内容插入到数据库中
+                if len(insert_image_list) > 0:
+                    sql = "INSERT INTO `tbl_image_caption` (`local_path`, `tags`, `caption`) VALUES (%s, %s, %s)"
+                    cursor.executemany(sql, insert_image_list)
+                    db_conn.commit()
+                    logger.info(f"Inserted {len(insert_image_list)} records into database.")
+                    insert_image_list.clear()
+            logger.info(f"Batch of {len(batch_files)} images processed.")
     except Exception as e:
         logger.error(f"Error processing batch: {str(e)}")
-    finally:
-        # 释放数据库连接
-        db_conn.close()
-        logger.info("Successfully disconnected from database.")
 
+    logger.info("Successfully disconnected from database.")
+    # 返回已处理的文件路径列表
     return processed_files
 
-def process_directory_mp(db_config, image_dir, model, image_size, input_tags=None, batch_size=24, max_workers=6):
+def process_directory_mp(db_config, image_dir, model, image_size, input_tags=None, batch_size=1000, max_workers=6):
     """
     Iterate over all image files in the specified directory and generate tags and caption for each image using the specified model.
     multiprocessing is used in parallel.
@@ -326,6 +325,7 @@ def main():
     logger.info("Main function completed.")
 
 
+# 使用示例：python image_caption_dir.py --cache-path C:/Users/gaoyo/.cache/Tag2Text --image-dir D:/work/wechat_download_data/images/ --db-host 127.0.0.1 --db-port 3306 --db-user root --db-pass root --db-name content_ner
 if __name__ == "__main__":
     main()
 
