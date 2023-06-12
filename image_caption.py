@@ -16,7 +16,6 @@ import imghdr
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
-from models.tag2text import tag2text_caption
 from image_caption_dir import initialize_model, generate, connect_to_database, insert_image
 from loguru import logger
 
