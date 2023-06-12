@@ -107,6 +107,7 @@ def create_file_list(image_dir):
         for filename in files:
             if filename.endswith('.jpg') or filename.endswith('.jpeg') or filename.endswith('.png') or filename.endswith('.webp'):
                 filepath = os.path.join(root, filename)
+                filepath = filepath.replace("\\", "/")
                 file_list.append(filepath)
 
     return file_list
