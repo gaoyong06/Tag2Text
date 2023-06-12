@@ -2,7 +2,7 @@
 Author: gaoyong gaoyong06@qq.com
 Date: 2023-06-08 11:44:38
 LastEditors: gaoyong gaoyong06@qq.com
-LastEditTime: 2023-06-12 16:26:37
+LastEditTime: 2023-06-12 17:31:02
 FilePath: \Tag2Text\test.py
 Description: 自动生成图片目录下的图片标签和内容描述
 '''
@@ -205,6 +205,46 @@ def load_file_list_csv(image_dir):
     return file_list
 
 
+def check_file_processed(db_conn, filepath):
+    """ Check whether a file has been processed and inserted into the database before or not. """
+    sql = "SELECT `tags`, `caption` FROM `tbl_image_caption` WHERE `local_path`=%s"
+    try:
+        with db_conn.cursor() as cursor:
+
+            # 检查该图像是否已被处理。
+            filepath = filepath.replace("\\", "/")
+            cursor.execute(sql, (filepath,))
+            result = cursor.fetchone()
+            if result is not None and result["tags"] and result["caption"]:
+                logger.info(f"{filepath} has been processed. Skipping.")
+                return True, result["tags"], result["caption"]
+    except Exception as e:
+        logger.error(
+            f"Error check file processed. {str(e)}")
+
+    return False, None, None
+
+
+def insert_into_database(db_conn, insert_image_list):
+    """ 批量插入数据到数据库 """
+    if len(insert_image_list) > 0:
+        try:
+            with db_conn.cursor() as cursor:
+                sql = "INSERT INTO `tbl_image_caption` (`local_path`, `tags`, `caption`) VALUES (%s, %s, %s)"
+                for insert_image in insert_image_list:
+                    if len(insert_image) != 3 or not insert_image[0] or not insert_image[1] or not insert_image[2]:
+                        logger.warning(f"Invalid input data: {insert_image}")
+                        continue
+                    cursor.execute(sql, insert_image)
+                db_conn.commit()
+                return True
+        except Exception as e:
+            logger.error(
+                f"Error Inserted {len(insert_image_list)} records into database. {str(e)}")
+            return False, str(e)
+    return True, ''
+
+
 def insert_image(db_conn, image_path, tags, caption):
     """
     This function inserts an image’s information into the database.
@@ -266,62 +306,66 @@ def worker_thread(batch_files: List[str], device, model, image_size, input_tags,
         # 获取数据库连接对象并使用
         with connect_to_database(db_config["db_host"], db_config["db_port"], db_config["db_user"], db_config["db_pass"], db_config["db_name"]) as db_conn:
             logger.info("Successfully connected to database.")
-            with db_conn.cursor() as cursor:
-                sql = "SELECT `tags`, `caption` FROM `tbl_image_caption` WHERE `local_path`=%s"
-                for filepath in batch_files:
-                    logger.info(f"Processing file: {filepath}")
-                    # 检查该图像是否已被处理。
-                    filepath = filepath.replace("\\", "/")
-                    cursor.execute(sql, (filepath,))
-                    result = cursor.fetchone()
-                    if result is not None and result["tags"] and result["caption"]:
-                        logger.info(
-                            f"{filepath} has been processed. Skipping.")
-                        continue
-                    # 检查该文件是否为图像文件。
-                    if imghdr.what(filepath) is None:
-                        logger.warning(
-                            f"{filepath} is not an image file. Skipping.")
-                        continue
-                    # 处理图像。
-                    try:
-                        with open(filepath, 'rb') as f:
-                            img = Image.open(f).convert("RGB")
-                            img_tensor = transform(img).unsqueeze(0).to(device)
-                            # 生成标签和说明
-                            tags, input_tags, caption = generate(
-                                model, img_tensor, input_tags)
-                            # 将需要插入数据库的记录加入列表 insert_image_list
-                            insert_image_list.append((filepath, tags, caption))
-                            # 如果 insert_image_list 中待插入的图片记录数量超过阈值，则进行批量插入操作
-                            if len(insert_image_list) >= 100:
-                                sql = "INSERT INTO `tbl_image_caption` (`local_path`, `tags`, `caption`) VALUES (%s, %s, %s)"
-                                cursor.executemany(sql, insert_image_list)
-                                db_conn.commit()
+            for filepath in batch_files:
+                logger.info(f"Processing file: {filepath}")
+                # 检查该图像是否已被处理。
+                filepath = filepath.replace("\\", "/")
+                # 检查该图像是否已被处理。
+                is_processed, tags, caption = check_file_processed(
+                    db_conn, filepath)
+                if is_processed:
+                    continue
+                # 检查该文件是否为图像文件。
+                if imghdr.what(filepath) is None:
+                    logger.warning(
+                        f"{filepath} is not an image file. Skipping.")
+                    continue
+                # 处理图像。
+                try:
+                    with open(filepath, 'rb') as f:
+                        img = Image.open(f).convert("RGB")
+                        img_tensor = transform(img).unsqueeze(0).to(device)
+                        # 生成标签和说明
+                        tags, input_tags, caption = generate(
+                            model, img_tensor, input_tags)
+                        logger.debug(f"Tags: {tags}. Caption: {caption}")
+                        # 将需要插入数据库的记录加入列表 insert_image_list
+                        insert_image_list.append((filepath, tags, caption))
+                        # 如果 insert_image_list 中待插入的图片记录数量超过阈值，则进行批量插入操作
+                        if len(insert_image_list) >= 100:
+                            success, error = insert_into_database(
+                                db_conn, insert_image_list)
+                            if success:
                                 logger.info(
                                     f"Inserted {len(insert_image_list)} records into database.")
                                 insert_image_list.clear()
-                            logger.info(f"{filepath} processed successfully. ")
-                            logger.debug(f"Tags: {tags}. Caption: {caption}")
-                            # 如果执行到这里，则表示该文件已处理
-                            processed_files.append(filepath)
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to process {filepath}. Error message: {str(e)}")
-                        continue
-                # 最后将 insert_image_list 中的内容插入到数据库中
-                if len(insert_image_list) > 0:
-                    sql = "INSERT INTO `tbl_image_caption` (`local_path`, `tags`, `caption`) VALUES (%s, %s, %s)"
-                    cursor.executemany(sql, insert_image_list)
-                    db_conn.commit()
+                            else:
+                                logger.error(error)
+                        logger.info(f"{filepath} processed successfully. ")
+                        # 如果执行到这里，则表示该文件已处理
+                        processed_files.append(filepath)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to process {filepath}. Error message: {str(e)}")
+                    continue
+
+            # 最后将 insert_image_list 中的内容插入到数据库中
+            if len(insert_image_list) > 0:
+                success, error = insert_into_database(
+                    db_conn, insert_image_list)
+                if success:
                     logger.info(
                         f"Inserted {len(insert_image_list)} records into database.")
                     insert_image_list.clear()
+                else:
+                    logger.error(error)
+
             logger.info(f"Batch of {len(batch_files)} images processed.")
+
     except Exception as e:
         logger.error(f"Error processing batch: {str(e)}")
-
-    logger.info("Successfully disconnected from database.")
+    finally:
+        logger.info("Successfully disconnected from database.")
 
     # 返回已处理的文件路径列表
     return processed_files

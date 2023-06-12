@@ -3,7 +3,7 @@
 Author: gaoyong gaoyong06@qq.com
 Date: 2023-06-08 10:51:43
 LastEditors: gaoyong gaoyong06@qq.com
-LastEditTime: 2023-06-12 15:45:52
+LastEditTime: 2023-06-12 17:41:36
 FilePath: \Tag2Text\image_caption.py
 Description: 自动生成图片标签和内容描述
 '''
@@ -16,7 +16,7 @@ import imghdr
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
-from image_caption_dir import initialize_model, generate, connect_to_database, insert_image
+from image_caption_dir import initialize_model, generate, connect_to_database, insert_into_database, check_file_processed
 from loguru import logger
 
 
@@ -89,6 +89,7 @@ def inference(db_conn, image_list, model, image_size, input_tags=None):
     """
 
     results = []
+    insert_image_list = []
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
@@ -103,23 +104,38 @@ def inference(db_conn, image_list, model, image_size, input_tags=None):
         for img_path in image_list:
             filepath = os.path.abspath(img_path)
             if not os.path.isfile(filepath) or not imghdr.what(filepath):
+                logger.warning(f"Skipping invalid image file: {filepath}")
                 continue
-            img = Image.open(filepath).convert("RGB")
-            img_tensor = transform(img).unsqueeze(0).to(device)
-            res = generate(model, img_tensor, input_tags)
+            is_processed, tags, caption = check_file_processed(
+                db_conn, filepath)
 
-            # 写入数据库
-            tags, input_tags, caption = res
-            insert_image(db_conn, filepath, tags, caption)
-            logger.info(f"{filepath} processed successfully. ")
-            logger.debug(f"Tags: {tags}. Caption: {caption}")
+            if not is_processed:
+                img = Image.open(filepath).convert("RGB")
+                img_tensor = transform(img).unsqueeze(0).to(device)
+                res = generate(model, img_tensor, input_tags)
+
+                # 写入数据库
+                tags, input_tags, caption = res
+                insert_image_list.append((filepath, tags, caption))
 
             results.append({
-                "filepath": img_path,
+                "filepath": filepath,
                 "model_identified_tags": tags,
                 "user_specified_tags": input_tags,
                 "image_caption": caption
             })
+
+        # 如果 insert_image_list 中待插入的图片记录数量超过阈值，则进行批量插入操作
+        if len(insert_image_list) > 0:
+            success, error = insert_into_database(
+                db_conn, insert_image_list)
+            if success:
+                logger.info(
+                    f"Inserted {len(insert_image_list)} records into database.")
+                insert_image_list.clear()
+            else:
+                logger.error(error)
+        logger.info(f"Processed {len(results)} files successfully.")
 
     return results
 
