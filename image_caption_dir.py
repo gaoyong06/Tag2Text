@@ -2,7 +2,7 @@
 Author: gaoyong gaoyong06@qq.com
 Date: 2023-06-08 11:44:38
 LastEditors: gaoyong gaoyong06@qq.com
-LastEditTime: 2023-06-09 17:10:04
+LastEditTime: 2023-06-12 15:45:12
 FilePath: \Tag2Text\test.py
 Description: 自动生成图片目录下的图片标签和内容描述
 '''
@@ -13,7 +13,6 @@ import os
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
-from image_caption import initialize_model, generate
 import datetime
 from threading import Lock
 from loguru import logger
@@ -34,9 +33,9 @@ import pymysql.cursors
 
 lock = Lock()
 
-FILE_LIST_CSV = 'file_list.csv'
-EXPIRATION_DAYS = 1
+EXPIRATION_DAYS = 14
 FILE_LIST_SUFFIX = '_file_list.csv'
+
 
 def parse_args():
     """
@@ -90,6 +89,68 @@ def parse_args():
     return parser.parse_args()
 
 
+def initialize_model(cache_path, pretrained, image_size, thre):
+    """
+    This function initializes a Tag2Text model based on specified and identified tags.
+    :param cache_path: Cache model file path.
+    :param pretrained: Path to the pre-trained model.
+    :param image_size: Input image size.
+    :param thre: Threshold value for tagging.
+    :return: A pre-trained Tag2Text model.
+    """
+
+    # delete some tags that may disturb captioning
+    # 127: "quarter"; 2961: "back", 3351: "two"; 3265: "three"; 3338: "four"; 3355: "five"; 3359: "one"
+    delete_tag_index = [127, 2961, 3351, 3265, 3338, 3355, 3359]
+
+    if os.path.exists(cache_path):
+        model = torch.load(cache_path)
+    else:
+        model = tag2text_caption(
+            pretrained=pretrained,
+            image_size=image_size,
+            vit='swin_b',
+            delete_tag_index=delete_tag_index
+        )
+        model.threshold = thre  # threshold for tagging
+        model.eval()
+        torch.save(model, cache_path)
+
+    return model
+
+
+def generate(model, image, input_tags=None):
+    """
+    This function generates tags and captions for an input image.
+    :param model: The neural network model used for generating captions and predicting tags for an input
+    image.
+    :param image: The input image to generate tags and captions for.
+    :param input_tags: The input tags used as hints for the model to generate captions for the input image.
+    It is an optional parameter and can be set to None or left empty if no tag hint is required.
+    :return: A tuple of predicted tags, input tags, and generated captions.
+    """
+
+    if input_tags in ('', 'none', 'None'):
+        input_tags = None
+
+    with torch.no_grad():
+        caption, tag_predict = model.generate(image,
+                                              tag_input=None,
+                                              max_length=50,
+                                              return_tag_predict=True)
+
+    if input_tags is None:
+        return tag_predict[0], None, caption[0]
+
+    input_tag_list = [input_tags.replace(',', ' | ')]
+    with torch.no_grad():
+        caption, input_tags = model.generate(image,
+                                             tag_input=input_tag_list,
+                                             max_length=50,
+                                             return_tag_predict=True)
+    return tag_predict[0], input_tags[0], caption[0]
+
+
 def get_file_list_csv(image_dir):
     """
     Get the file list CSV filename associated with the specified image directory.
@@ -98,6 +159,7 @@ def get_file_list_csv(image_dir):
     dir_name = os.path.basename(os.path.normpath(image_dir))
     csv_file = os.path.join(image_dir, dir_name + FILE_LIST_SUFFIX)
     return csv_file
+
 
 def create_file_list(image_dir):
     """
@@ -117,6 +179,7 @@ def create_file_list(image_dir):
 
     return file_list
 
+
 def save_file_list(file_list, csv_file):
     """
     Save the list of file paths to a CSV file.
@@ -128,27 +191,29 @@ def save_file_list(file_list, csv_file):
         for filepath in file_list:
             csvwriter.writerow([filepath])
 
+
 def load_file_list_csv(image_dir):
     """
     Load the list of file paths from a CSV file if it is not expired.
     """
     logger.info("start")
     csv_file = get_file_list_csv(image_dir)
-    
+
     if os.path.isfile(csv_file):
         mod_time = os.path.getmtime(csv_file)
         exp_time = datetime.fromtimestamp(mod_time + EXPIRATION_DAYS*24*60*60)
         if exp_time >= datetime.now():
             with open(csv_file, 'r') as f:
                 reader = csv.reader(f)
-                next(reader) # skip header
+                next(reader)  # skip header
                 file_list = [row[0] for row in reader]
             return file_list
-    
+
     # 如果 CSV 文件不存在或已过期，则重新生成新的文件列表
     file_list = create_file_list(image_dir)
     save_file_list(file_list, csv_file)
     return file_list
+
 
 def insert_image(db_conn, image_path, tags, caption):
     """
@@ -166,11 +231,11 @@ def insert_image(db_conn, image_path, tags, caption):
             if cursor.rowcount > 0:
                 logger.info(f"{image_path} already processed. Skipping.")
                 return False
-            
+
             sql = "INSERT INTO tbl_image_caption (local_path, tags, caption) VALUES (%s, %s, %s)"
             cursor.execute(sql, (image_path, tags, caption))
             logger.info(f"{cursor.rowcount} rows inserted.")
-            
+
         db_conn.commit()  # commit changes to the database
         return True
 
@@ -201,7 +266,7 @@ def worker_thread(batch_files: List[str], device, model, image_size, input_tags,
 
     # 定义标准化及变换过程
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                    std=[0.229, 0.224, 0.225])
+                                     std=[0.229, 0.224, 0.225])
     transform = transforms.Compose([
         transforms.Resize((image_size, image_size)),
         transforms.ToTensor(), normalize
@@ -209,7 +274,8 @@ def worker_thread(batch_files: List[str], device, model, image_size, input_tags,
 
     try:
         # 获取数据库连接对象并使用
-        db_conn = connect_to_database(db_config["db_host"], db_config["db_port"], db_config["db_user"], db_config["db_pass"], db_config["db_name"])
+        db_conn = connect_to_database(
+            db_config["db_host"], db_config["db_port"], db_config["db_user"], db_config["db_pass"], db_config["db_name"])
         logger.info("Successfully connected to database.")
 
         with db_conn.cursor() as cursor:
@@ -226,7 +292,8 @@ def worker_thread(batch_files: List[str], device, model, image_size, input_tags,
 
                 # 检查该文件是否为图像文件。
                 if imghdr.what(filepath) is None:
-                    logger.warning(f"{filepath} is not an image file. Skipping.")
+                    logger.warning(
+                        f"{filepath} is not an image file. Skipping.")
                     continue
 
                 # 处理图像。
@@ -234,7 +301,8 @@ def worker_thread(batch_files: List[str], device, model, image_size, input_tags,
                     with open(filepath, 'rb') as f:
                         img = Image.open(f).convert("RGB")
                         img_tensor = transform(img).unsqueeze(0).to(device)
-                        res = generate(model, img_tensor, input_tags)  # 生成标签和说明
+                        res = generate(model, img_tensor,
+                                       input_tags)  # 生成标签和说明
                     tags, input_tags, caption = res
                     insert_image(db_conn, filepath, tags, caption)  # 写入数据库
 
@@ -245,7 +313,8 @@ def worker_thread(batch_files: List[str], device, model, image_size, input_tags,
                     processed_files.append(filepath)
 
                 except Exception as e:
-                    logger.error(f"Failed to process {filepath}. Error message: {str(e)}")
+                    logger.error(
+                        f"Failed to process {filepath}. Error message: {str(e)}")
                     continue
 
         logger.info(f"Batch of {len(batch_files)} images processed.")
@@ -258,12 +327,14 @@ def worker_thread(batch_files: List[str], device, model, image_size, input_tags,
 
     return processed_files
 
+
 def process_directory_mp(db_config, image_dir, model, image_size, input_tags=None, batch_size=24, max_workers=6):
     """
     Iterate over all image files in the specified directory and generate tags and caption for each image using the specified model.
     multiprocessing is used in parallel.
     """
-    logger.info(f"Processing directory (parallel, batching {batch_size}): {image_dir}")
+    logger.info(
+        f"Processing directory (parallel, batching {batch_size}): {image_dir}")
     file_list = load_file_list_csv(image_dir)
     total_files = len(file_list)
     total_batches = (total_files + batch_size - 1) // batch_size
@@ -277,9 +348,11 @@ def process_directory_mp(db_config, image_dir, model, image_size, input_tags=Non
             start_idx = i * batch_size
             end_idx = min(start_idx + batch_size, total_files)
             batch_files = file_list[start_idx:end_idx]
-            future = executor.submit(worker_thread, batch_files, device, model, image_size, input_tags, db_config)
+            future = executor.submit(
+                worker_thread, batch_files, device, model, image_size, input_tags, db_config)
             futures.append(future)
-            logger.info(f"Batch {i+1}/{total_batches} of {len(batch_files)} images submitted.")
+            logger.info(
+                f"Batch {i+1}/{total_batches} of {len(batch_files)} images submitted.")
 
         processed_files = []
         for future in as_completed(futures):
@@ -287,7 +360,8 @@ def process_directory_mp(db_config, image_dir, model, image_size, input_tags=Non
                 res = future.result()
                 if res is not None:
                     processed_files.extend(res)
-                    logger.info(f"Batch processed. {len(res)} images processed.")
+                    logger.info(
+                        f"Batch processed. {len(res)} images processed.")
             except Exception as exc:
                 logger.error(f"Exception occurred: {exc}")
             else:
@@ -317,16 +391,17 @@ def main():
     }
     # initialize the model
     logger.info("Preparing to initialize the model...")
-    model = initialize_model(args.cache_path, args.pretrained, args.image_size, args.thre)
+    model = initialize_model(
+        args.cache_path, args.pretrained, args.image_size, args.thre)
     logger.info("Model initialization completed.")
 
     # process the input images
     logger.info(f"Processing images in directory: {args.image_dir}")
-    processed_files = process_directory_mp(db_config, args.image_dir, model, args.image_size, args.specified_tags)
+    processed_files = process_directory_mp(
+        db_config, args.image_dir, model, args.image_size, args.specified_tags)
     logger.info(f"{len(processed_files)} images processed.")
     logger.info("Main function completed.")
 
 
 if __name__ == "__main__":
     main()
-
