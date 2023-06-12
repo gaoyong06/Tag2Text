@@ -3,9 +3,9 @@
 Author: gaoyong gaoyong06@qq.com
 Date: 2023-06-08 10:51:43
 LastEditors: gaoyong gaoyong06@qq.com
-LastEditTime: 2023-06-12 17:41:36
+LastEditTime: 2023-06-12 21:27:28
 FilePath: \Tag2Text\image_caption.py
-Description: 自动生成图片标签和内容描述
+Description: 自动生成图片标签和内容描述, 一次处理多个图片文件
 '''
 import argparse
 import json
@@ -103,20 +103,32 @@ def inference(db_conn, image_list, model, image_size, input_tags=None):
     if image_list and isinstance(image_list, list):
         for img_path in image_list:
             filepath = os.path.abspath(img_path)
+
+            # 检查该文件是否为图像文件
             if not os.path.isfile(filepath) or not imghdr.what(filepath):
-                logger.warning(f"Skipping invalid image file: {filepath}")
+                logger.warning(
+                    f"{filepath} is not an image file. Skipping.")
                 continue
+            # 检查该图像是否已被处理。
             is_processed, tags, caption = check_file_processed(
                 db_conn, filepath)
+            if is_processed:
+                logger.info(
+                    f"{filepath} has been processed. Skipping.")
+                continue
 
-            if not is_processed:
-                img = Image.open(filepath).convert("RGB")
-                img_tensor = transform(img).unsqueeze(0).to(device)
-                res = generate(model, img_tensor, input_tags)
-
-                # 写入数据库
-                tags, input_tags, caption = res
-                insert_image_list.append((filepath, tags, caption))
+            # 处理图像。
+            try:
+                with open(filepath, 'rb') as f:
+                    img = Image.open(f).convert("RGB")
+                    img_tensor = transform(img).unsqueeze(0).to(device)
+                    res = generate(model, img_tensor, input_tags)
+                    tags, input_tags, caption = res
+                    insert_image_list.append((filepath, tags, caption))
+            except Exception as e:
+                logger.error(
+                    f"Failed to process {filepath}. Error message: {str(e)}")
+                continue
 
             results.append({
                 "filepath": filepath,

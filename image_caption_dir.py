@@ -2,8 +2,8 @@
 Author: gaoyong gaoyong06@qq.com
 Date: 2023-06-08 11:44:38
 LastEditors: gaoyong gaoyong06@qq.com
-LastEditTime: 2023-06-12 17:31:02
-FilePath: \Tag2Text\test.py
+LastEditTime: 2023-06-12 21:24:58
+FilePath: \Tag2Text\image_caption_dir.py
 Description: 自动生成图片目录下的图片标签和内容描述
 '''
 import argparse
@@ -226,7 +226,7 @@ def check_file_processed(db_conn, filepath):
 
 
 def insert_into_database(db_conn, insert_image_list):
-    """ 批量插入数据到数据库 """
+    """ Batch insert data into the database """
     if len(insert_image_list) > 0:
         try:
             with db_conn.cursor() as cursor:
@@ -243,36 +243,6 @@ def insert_into_database(db_conn, insert_image_list):
                 f"Error Inserted {len(insert_image_list)} records into database. {str(e)}")
             return False, str(e)
     return True, ''
-
-
-def insert_image(db_conn, image_path, tags, caption):
-    """
-    This function inserts an image’s information into the database.
-    :param db_conn: A database connection object.
-    :param image_path: The image’s local path on disk.
-    :param tags: The image’s predicted tags.
-    :param caption: The image’s generated caption.
-    :return: True if the image was inserted successfully, False otherwise.
-    """
-    try:
-        with db_conn.cursor() as cursor:
-            sql = "SELECT image_id FROM tbl_image_caption WHERE local_path=%s AND tags<>'' AND caption<>''"
-            cursor.execute(sql, (image_path,))
-            if cursor.rowcount > 0:
-                logger.info(f"{image_path} already processed. Skipping.")
-                return False
-
-            sql = "INSERT INTO tbl_image_caption (local_path, tags, caption) VALUES (%s, %s, %s)"
-            cursor.execute(sql, (image_path, tags, caption))
-            logger.info(f"{cursor.rowcount} rows inserted.")
-
-        db_conn.commit()  # commit changes to the database
-        return True
-
-    except Exception as ex:
-        db_conn.rollback()  # undo changes on error
-        logger.info(f"Failed to insert {image_path} into database: {ex}")
-        return False
 
 
 def connect_to_database(db_host, db_port, db_user, db_pass, db_name):
@@ -308,18 +278,22 @@ def worker_thread(batch_files: List[str], device, model, image_size, input_tags,
             logger.info("Successfully connected to database.")
             for filepath in batch_files:
                 logger.info(f"Processing file: {filepath}")
-                # 检查该图像是否已被处理。
+                
                 filepath = filepath.replace("\\", "/")
-                # 检查该图像是否已被处理。
-                is_processed, tags, caption = check_file_processed(
-                    db_conn, filepath)
-                if is_processed:
-                    continue
                 # 检查该文件是否为图像文件。
                 if imghdr.what(filepath) is None:
                     logger.warning(
                         f"{filepath} is not an image file. Skipping.")
                     continue
+
+                # 检查该图像是否已被处理。
+                is_processed, tags, caption = check_file_processed(
+                    db_conn, filepath)
+                if is_processed:
+                    logger.info(
+                        f"{filepath} has been processed. Skipping.")
+                    continue
+                
                 # 处理图像。
                 try:
                     with open(filepath, 'rb') as f:
