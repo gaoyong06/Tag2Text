@@ -3,7 +3,7 @@
 Author: gaoyong gaoyong06@qq.com
 Date: 2023-06-08 10:51:43
 LastEditors: gaoyong gaoyong06@qq.com
-LastEditTime: 2023-06-12 21:27:28
+LastEditTime: 2023-06-13 21:52:11
 FilePath: \Tag2Text\image_caption.py
 Description: 自动生成图片标签和内容描述, 一次处理多个图片文件
 '''
@@ -102,8 +102,10 @@ def inference(db_conn, image_list, model, image_size, input_tags=None):
 
     if image_list and isinstance(image_list, list):
         for img_path in image_list:
+            
             filepath = os.path.abspath(img_path)
-
+            filepath = filepath.replace("\\", "/")
+            
             # 检查该文件是否为图像文件
             if not os.path.isfile(filepath) or not imghdr.what(filepath):
                 logger.warning(
@@ -115,8 +117,14 @@ def inference(db_conn, image_list, model, image_size, input_tags=None):
             if is_processed:
                 logger.info(
                     f"{filepath} has been processed. Skipping.")
+                results.append({
+                    "filepath": filepath,
+                    "model_identified_tags": tags,
+                    "user_specified_tags": input_tags,
+                    "image_caption": caption
+                })
                 continue
-
+            logger.info(f"Processing file {filepath}")
             # 处理图像。
             try:
                 with open(filepath, 'rb') as f:
@@ -138,7 +146,7 @@ def inference(db_conn, image_list, model, image_size, input_tags=None):
             })
 
         # 如果 insert_image_list 中待插入的图片记录数量超过阈值，则进行批量插入操作
-        if len(insert_image_list) > 0:
+        if insert_image_list:
             success, error = insert_into_database(
                 db_conn, insert_image_list)
             if success:
@@ -159,6 +167,7 @@ def main():
     """
     start_time = time.time()
     args = parse_args()
+    data = []
 
     # set up the database connection pool
     db_config = {
@@ -209,8 +218,6 @@ def main():
     print(json.dumps(results, ensure_ascii=False, indent=2))
 
 # 使用示例：
-# python image_caption.py --cache-path C:/Users/gaoyo/.cache/Tag2Text --images C:/Users/gaoyo/Desktop/test1/20170912_234158_1_14_70wf.jpeg C:/Users/gaoyo/Desktop/test1/20170918_192435_1_57_9yto.jpeg
-
-
+# python image_caption.py --cache-path C:/Users/gaoyo/.cache/Tag2Text --images C:/Users/gaoyo/Desktop/test1/20170912_234158_1_14_70wf.jpeg C:/Users/gaoyo/Desktop/test1/20170918_192435_1_57_9yto.jpe
 if __name__ == '__main__':
     main()
