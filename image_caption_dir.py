@@ -2,7 +2,7 @@
 Author: gaoyong gaoyong06@qq.com
 Date: 2023-06-08 11:44:38
 LastEditors: gaoyong gaoyong06@qq.com
-LastEditTime: 2023-06-12 21:24:58
+LastEditTime: 2023-06-13 21:45:55
 FilePath: \Tag2Text\image_caption_dir.py
 Description: 自动生成图片目录下的图片标签和内容描述
 '''
@@ -237,7 +237,7 @@ def insert_into_database(db_conn, insert_image_list):
                         continue
                     cursor.execute(sql, insert_image)
                 db_conn.commit()
-                return True
+                return True, ''
         except Exception as e:
             logger.error(
                 f"Error Inserted {len(insert_image_list)} records into database. {str(e)}")
