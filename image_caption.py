@@ -3,7 +3,7 @@
 Author: gaoyong gaoyong06@qq.com
 Date: 2023-06-08 10:51:43
 LastEditors: gaoyong gaoyong06@qq.com
-LastEditTime: 2023-07-30 11:03:37
+LastEditTime: 2023-07-30 11:12:50
 FilePath: \Tag2Text\image_caption.py
 Description: 自动生成图片标签和内容描述, 一次处理多个图片文件
 '''
@@ -206,8 +206,8 @@ def main():
     end_time = time.time()
     elapsed_time = end_time - start_time
 
-    print(
-        f"Processed {len(results['data'])} images in {elapsed_time:.2f} seconds.")
+    # print(
+    #     f"Processed {len(results['data'])} images in {elapsed_time:.2f} seconds.")
 
     print(json.dumps(results, ensure_ascii=False, indent=2))
 
